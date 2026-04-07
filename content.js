@@ -1,4 +1,106 @@
 const STORAGE_KEY = "rulesByHost";
+const PLATFORM_PRESETS = {
+  chatgpt: {
+    label: "ChatGPT",
+    hosts: ["chatgpt.com", "chat.openai.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid^="conversation-turn-"]', presetName: 'conversation-turn' },
+      { listSelector: "main", itemSelector: 'article[data-testid*="conversation"], article[data-testid*="turn"]', presetName: 'article-testid' },
+      { listSelector: "main", itemSelector: 'article', presetName: 'main-article' },
+      { listSelector: "body", itemSelector: '[data-message-author-role]', presetName: 'role-attr' },
+    ],
+  },
+  claude: {
+    label: "Claude",
+    hosts: ["claude.ai"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [data-testid*="chat-message"]', presetName: 'testid-message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="message"], div[class*="message"]', presetName: 'message-block' },
+      { listSelector: "body", itemSelector: '[data-is-streaming], [class*="font-claude-message"], [class*="message"]', presetName: 'stream-message' },
+    ],
+  },
+  gemini: {
+    label: "Gemini",
+    hosts: ["gemini.google.com", "bard.google.com"],
+    rules: [
+      { listSelector: "main", itemSelector: 'user-query, model-response', presetName: 'custom-elements' },
+      { listSelector: "main", itemSelector: '[data-test-id*="message"], [class*="conversation-container"] > *', presetName: 'testid-message' },
+      { listSelector: "body", itemSelector: 'user-query, model-response, [class*="query-text"], [class*="model-response"]', presetName: 'gemini-fallback' },
+    ],
+  },
+  perplexity: {
+    label: "Perplexity",
+    hosts: ["perplexity.ai", "www.perplexity.ai"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [data-testid*="thread"] > *', presetName: 'testid-message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="thread"], div[class*="message"]', presetName: 'message-block' },
+      { listSelector: "body", itemSelector: '[class*="thread"] > div, [class*="message"]', presetName: 'thread-fallback' },
+    ],
+  },
+  doubao: {
+    label: "豆包",
+    hosts: ["doubao.com", "www.doubao.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message-item"], [class*="chat-item"]', presetName: 'message-item' },
+      { listSelector: "main", itemSelector: 'article, section[class*="message"], div[class*="conversation"] > div', presetName: 'conversation-children' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="chat-item"]', presetName: 'body-fallback' },
+    ],
+  },
+  deepseek: {
+    label: "DeepSeek",
+    hosts: ["chat.deepseek.com", "deepseek.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="chat"] > div', presetName: 'chat-children' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="chat-item"]', presetName: 'body-fallback' },
+    ],
+  },
+  kimi: {
+    label: "Kimi",
+    hosts: ["kimi.moonshot.cn", "moonshot.cn", "www.moonshot.cn"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="chat"] > div, div[class*="turn"]', presetName: 'turn-block' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="turn"]', presetName: 'body-fallback' },
+    ],
+  },
+  yuanbao: {
+    label: "腾讯元宝",
+    hosts: ["yuanbao.tencent.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="conversation"] > div, div[class*="turn"]', presetName: 'turn-block' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="turn"]', presetName: 'body-fallback' },
+    ],
+  },
+  tongyi: {
+    label: "通义",
+    hosts: ["tongyi.aliyun.com", "qianwen.aliyun.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, section[class*="chat"] > div, div[class*="turn"]', presetName: 'turn-block' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="turn"]', presetName: 'body-fallback' },
+    ],
+  },
+  zhipu: {
+    label: "智谱清言",
+    hosts: ["chatglm.cn"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, div[class*="turn"], section[class*="conversation"] > div', presetName: 'turn-block' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="turn"]', presetName: 'body-fallback' },
+    ],
+  },
+  wenxin: {
+    label: "文心一言",
+    hosts: ["yiyan.baidu.com"],
+    rules: [
+      { listSelector: "main", itemSelector: '[data-testid*="message"], [class*="message"]', presetName: 'message' },
+      { listSelector: "main", itemSelector: 'article, div[class*="turn"], section[class*="conversation"] > div', presetName: 'turn-block' },
+      { listSelector: "body", itemSelector: '[class*="message"], [class*="turn"]', presetName: 'body-fallback' },
+    ],
+  },
+};
 let currentRule = null;
 let observer = null;
 let isApplying = false;
@@ -9,6 +111,28 @@ let bootstrapStopTimer = null;
 
 function getHost() {
   return location.host;
+}
+
+function detectPlatform(host = getHost()) {
+  const normalized = String(host || '').toLowerCase();
+  for (const [key, meta] of Object.entries(PLATFORM_PRESETS)) {
+    if ((meta.hosts || []).some((item) => normalized === item || normalized.endsWith(`.${item}`))) {
+      return { key, label: meta.label, rules: meta.rules || [] };
+    }
+  }
+  return { key: 'generic', label: '通用站点', rules: [] };
+}
+
+function getPresetCandidates() {
+  const platform = detectPlatform();
+  return platform.rules.map((rule) => ({
+    ...rule,
+    enabled: true,
+    autoTrim: true,
+    detectionMode: 'preset',
+    platformKey: platform.key,
+    platformLabel: platform.label,
+  }));
 }
 
 function debounceApply() {
@@ -289,6 +413,63 @@ function buildRoundGroups(items) {
   }
 
   return { mode: "single", groups: items.map((el) => [el]) };
+}
+
+function getRuleProbe(rule) {
+  const { listEl, items } = getMatchedItems(rule);
+  if (!(listEl instanceof Element)) {
+    return { ok: false, reason: 'missing-list' };
+  }
+  const grouping = buildRoundGroups(items);
+  const totalCount = grouping.groups.length;
+  const roleStats = items.reduce((acc, el) => {
+    const role = inferMessageRole(el);
+    acc[role] = (acc[role] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    ok: items.length >= 2 && totalCount >= 1,
+    listEl,
+    items,
+    grouping,
+    totalCount,
+    roleStats,
+  };
+}
+
+function findPresetRule() {
+  const platform = detectPlatform();
+  const candidates = getPresetCandidates();
+  const tried = [];
+  let best = null;
+
+  for (const candidate of candidates) {
+    try {
+      const probe = getRuleProbe(candidate);
+      tried.push(`${candidate.presetName || candidate.itemSelector}:${probe.items?.length || 0}`);
+      if (!probe.ok) continue;
+      const score = (probe.totalCount * 100) + (probe.items.length * 5) + ((probe.roleStats.user || 0) > 0 ? 30 : 0) + ((probe.roleStats.assistant || 0) > 0 ? 30 : 0);
+      if (!best || score > best.score) {
+        best = { score, candidate, probe };
+      }
+    } catch (error) {
+      tried.push(`${candidate.presetName || candidate.itemSelector}:x`);
+    }
+  }
+
+  if (!best) {
+    return { ok: false, platform, error: '未命中站点预设', tried };
+  }
+
+  return {
+    ok: true,
+    platform,
+    rule: best.candidate,
+    totalCount: best.probe.totalCount,
+    groupingMode: best.probe.grouping.mode,
+    preview: `${platform.label} · ${best.candidate.presetName || best.candidate.itemSelector}`,
+    tried,
+  };
 }
 
 function getMatchedItems(rule) {
@@ -641,6 +822,23 @@ function getLikelySeedElements() {
 }
 
 function guessTurnRule() {
+  const preset = findPresetRule();
+  if (preset?.ok && preset.rule) {
+    return {
+      ok: true,
+      source: 'preset',
+      platformKey: preset.platform.key,
+      platformLabel: preset.platform.label,
+      rule: {
+        ...preset.rule,
+        detectionMode: 'preset',
+      },
+      preview: preset.preview,
+      totalCount: preset.totalCount,
+      groupingMode: preset.groupingMode,
+    };
+  }
+
   const seeds = getLikelySeedElements();
   const candidates = [];
 
@@ -652,16 +850,22 @@ function guessTurnRule() {
   }
 
   if (!candidates.length) {
-    return { ok: false, error: "暂时无法自动识别对话框，请手动点选一条对话" };
+    return { ok: false, error: `暂时无法自动识别对话框${preset?.platform?.key && preset.platform.key !== 'generic' ? `（${preset.platform.label} 预设未命中）` : ''}，请手动点选一条对话` };
   }
 
   candidates.sort((a, b) => b.score - a.score);
   const best = candidates[0];
+  const platform = detectPlatform();
   return {
     ok: true,
+    source: 'auto',
+    platformKey: platform.key,
+    platformLabel: platform.label,
     rule: {
       ...best.rule,
       detectionMode: "auto",
+      platformKey: platform.key,
+      platformLabel: platform.label,
     },
     preview: best.preview,
   };
@@ -705,6 +909,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message?.type === "guessTurnRule") {
         const result = guessTurnRule();
         sendResponse(result);
+        return;
+      }
+
+      if (message?.type === "getPlatformInfo") {
+        const platform = detectPlatform();
+        sendResponse({ ok: true, platformKey: platform.key, platformLabel: platform.label, presetCount: platform.rules.length });
         return;
       }
 

@@ -16,6 +16,7 @@ const els = {
   countBadge: document.getElementById("countBadge"),
   autoTrim: document.getElementById("autoTrim"),
   siteInfo: document.getElementById("siteInfo"),
+  platformInfo: document.getElementById("platformInfo"),
   keepCount: document.getElementById("keepCount"),
   detectedInfo: document.getElementById("detectedInfo"),
   status: document.getElementById("status"),
@@ -44,11 +45,13 @@ function getKeepCount() {
 
 function updateDetectedInfo(rule) {
   if (!rule?.listSelector || !rule?.itemSelector) {
-    els.detectedInfo.textContent = "未配置。点击“保存并应用”时会先自动识别。";
+    els.detectedInfo.textContent = "默认先走站点预设，命不中再回退自动识别。若还不准，再点“手动选择对话框”。";
     return;
   }
-  const modeText = rule.detectionMode === "manual" ? "手动点选" : "自动识别";
-  els.detectedInfo.textContent = `已识别当前站点对话块（${modeText}）。以后只需要改保留轮数即可。`;
+  const modeMap = { manual: "手动点选", auto: "自动识别", preset: "站点预设" };
+  const modeText = modeMap[rule.detectionMode] || "自动识别";
+  const platformText = rule.platformLabel ? ` · ${rule.platformLabel}` : "";
+  els.detectedInfo.textContent = `已识别当前站点对话块（${modeText}${platformText}）。以后只需要改保留轮数即可。`;
 }
 
 function normalizeRule(rule, { fromUI = true } = {}) {
@@ -130,6 +133,22 @@ async function sendToContent(message) {
   return chrome.tabs.sendMessage(currentTabId, message);
 }
 
+async function loadPlatformInfo() {
+  if (isRestrictedUrl(currentTabUrl)) {
+    if (els.platformInfo) els.platformInfo.textContent = "请切到聊天网页";
+    return;
+  }
+  try {
+    const info = await sendToContent({ type: "getPlatformInfo" });
+    if (els.platformInfo) {
+      const presetText = info?.presetCount ? ` · 已内置 ${info.presetCount} 条预设` : " · 暂无预设";
+      els.platformInfo.textContent = info?.platformLabel ? `当前站点：${info.platformLabel}${presetText}` : "当前站点：通用站点";
+    }
+  } catch {
+    if (els.platformInfo) els.platformInfo.textContent = "当前站点：待识别";
+  }
+}
+
 async function loadCurrentRule() {
   const tab = await getCurrentTab();
   currentTabId = tab?.id ?? null;
@@ -189,7 +208,7 @@ async function detectRule(auto = true) {
     throw new Error(result?.error || "自动识别失败");
   }
   const nextRule = normalizeRule({ ...currentRule, ...result.rule, detectionMode: "auto" });
-  setStatus(`已自动识别对话块：${result.preview || "成功"}`);
+  setStatus(`已识别：${result.preview || "成功"}`);
   return nextRule;
 }
 
@@ -225,7 +244,7 @@ els.autoDetect.addEventListener("click", async () => {
       throw new Error(result?.error || "应用失败");
     }
     await saveRule(rule);
-    setStatus(`重新识别完成，已清理 ${result.trimmedCount} 轮旧对话。`);
+    setStatus(`重新识别完成，已按${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}清理 ${result.trimmedCount} 轮旧对话。`);
   } catch (error) {
     setStatus(error.message || String(error), true);
   }
@@ -251,7 +270,7 @@ els.trimNow.addEventListener("click", async () => {
       throw new Error(result?.error || "清理失败");
     }
     await saveRule(rule);
-    setStatus(`已清理 ${result.trimmedCount} 轮旧对话，当前识别到 ${result.totalCount} 轮。`);
+    setStatus(`已按${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}清理 ${result.trimmedCount} 轮旧对话，当前识别到 ${result.totalCount} 轮。`);
   } catch (error) {
     setStatus(error.message || String(error), true);
   }
@@ -268,7 +287,7 @@ els.saveApply.addEventListener("click", async () => {
       throw new Error(result?.error || "应用失败");
     }
     await saveRule(rule);
-    setStatus(`规则已保存，已保留最后 ${rule.keepCount} 轮，当前清理了 ${result.trimmedCount} 轮旧对话。`);
+    setStatus(`规则已保存（${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}），已保留最后 ${rule.keepCount} 轮，当前清理了 ${result.trimmedCount} 轮旧对话。`);
   } catch (error) {
     setStatus(error.message || String(error), true);
   }
@@ -292,6 +311,7 @@ els.clearRule.addEventListener("click", async () => {
     els.autoTrim?.addEventListener("change", () => { currentRule.autoTrim = !!els.autoTrim.checked; });
     if (!isRestrictedUrl(currentTabUrl)) {
       await ensureContentScriptReady().catch(() => {});
+      await loadPlatformInfo();
       setStatus("准备就绪");
     }
   } catch (error) {
