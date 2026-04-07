@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LastTurns",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Keep only the most recent chat turns on long AI conversation pages to reduce lag.",
   "permissions": [
     "storage",

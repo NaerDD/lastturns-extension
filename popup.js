@@ -1,320 +1,303 @@
-const DEFAULT_RULE = {
-  enabled: true,
-  keepCount: 5,
-  autoTrim: true,
-  listSelector: "",
-  itemSelector: "",
-  detectionMode: "auto",
-};
+const STORAGE_KEY = "rulesByHost";
 
+const keepCountInput = document.getElementById("keepCount");
+const autoTrimInput = document.getElementById("autoTrim");
+const statusEl = document.getElementById("status");
+const btnApply = document.getElementById("btnApply");
+const btnGuess = document.getElementById("btnGuess");
+const btnPick = document.getElementById("btnPick");
+const btnClear = document.getElementById("btnClear");
+const platformInfoEl = document.getElementById("platformInfo");
+
+let currentTab = null;
 let currentHost = "";
-let currentTabId = null;
-let currentTabUrl = "";
-let currentRule = { ...DEFAULT_RULE };
+let currentPlatform = null;
+let currentRule = null;
 
-const els = {
-  countBadge: document.getElementById("countBadge"),
-  autoTrim: document.getElementById("autoTrim"),
-  siteInfo: document.getElementById("siteInfo"),
-  platformInfo: document.getElementById("platformInfo"),
-  keepCount: document.getElementById("keepCount"),
-  detectedInfo: document.getElementById("detectedInfo"),
-  status: document.getElementById("status"),
-  saveApply: document.getElementById("saveApply"),
-  trimNow: document.getElementById("trimNow"),
-  autoDetect: document.getElementById("autoDetect"),
-  pickTurn: document.getElementById("pickTurn"),
-  clearRule: document.getElementById("clearRule"),
-};
-
-function setStatus(text, isError = false) {
-  els.status.textContent = text;
-  els.status.style.color = isError ? "#dc2626" : "";
+function setStatus(text, type = "info") {
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.dataset.type = type;
 }
 
-function syncCountBadge() {
-  const count = getKeepCount();
-  if (els.countBadge) {
-    els.countBadge.textContent = `${count} 轮`;
-  }
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
 }
 
-function getKeepCount() {
-  return Math.max(1, Number.parseInt(els.keepCount.value || "20", 10));
-}
-
-function updateDetectedInfo(rule) {
-  if (!rule?.listSelector || !rule?.itemSelector) {
-    els.detectedInfo.textContent = "默认先走站点预设，命不中再回退自动识别。若还不准，再点“手动选择对话框”。";
-    return;
-  }
-  const modeMap = { manual: "手动点选", auto: "自动识别", preset: "站点预设" };
-  const modeText = modeMap[rule.detectionMode] || "自动识别";
-  const platformText = rule.platformLabel ? ` · ${rule.platformLabel}` : "";
-  els.detectedInfo.textContent = `已识别当前站点对话块（${modeText}${platformText}）。以后只需要改保留轮数即可。`;
-}
-
-function normalizeRule(rule, { fromUI = true } = {}) {
-  const merged = {
-    ...DEFAULT_RULE,
-    ...(rule || {}),
-    enabled: true,
-  };
-
-  if (fromUI) {
-    merged.keepCount = getKeepCount();
-    merged.autoTrim = !!els.autoTrim?.checked;
-  } else {
-    merged.keepCount = Math.max(1, Number.parseInt(String(merged.keepCount || DEFAULT_RULE.keepCount), 10));
-    merged.autoTrim = !!merged.autoTrim;
-  }
-
-  return merged;
-}
-
-async function getStorage(keys) {
-  return chrome.storage.local.get(keys);
-}
-
-async function setStorage(obj) {
-  return chrome.storage.local.set(obj);
-}
-
-async function getCurrentTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
-}
-
-function isRestrictedUrl(url) {
-  if (!url) return true;
-  return /^(chrome|edge|about|brave|vivaldi|opera|moz-extension|chrome-extension):/i.test(url);
-}
-
-async function ensureContentScriptReady() {
-  if (currentTabId == null) {
-    throw new Error("当前标签页不可用");
-  }
-  if (isRestrictedUrl(currentTabUrl)) {
-    throw new Error("当前页面不允许扩展注入。请切到具体的大模型网页后再使用。\n例如不要在 chrome://、扩展页、应用商店页里操作。");
-  }
-
+function getHostFromUrl(url) {
   try {
-    const pong = await chrome.tabs.sendMessage(currentTabId, { type: "ping" });
-    if (pong?.ok) return;
-  } catch (error) {
-    const msg = String(error?.message || error || "");
-    const canRetry = /Receiving end does not exist|Could not establish connection|The message port closed/i.test(msg);
-    if (!canRetry) {
-      throw error;
-    }
+    return new URL(url).host;
+  } catch {
+    return "";
   }
+}
+
+function isSupportedPage(url) {
+  if (!url) return false;
+  return /^https?:\/\//i.test(url);
+}
+
+async function pingContentScript(tabId) {
+  try {
+    const resp = await chrome.tabs.sendMessage(tabId, { type: "ping" });
+    return !!resp?.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureContentScript(tabId) {
+  const ok = await pingContentScript(tabId);
+  if (ok) return true;
 
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: currentTabId },
+      target: { tabId },
       files: ["content.js"],
     });
   } catch (error) {
-    throw new Error("当前页面无法注入扩展脚本。请刷新目标网页后重试，或切到普通网页标签页。\n若你在 ChatGPT/Claude/Gemini 页面里仍报错，点一下扩展管理页的“重新加载”再试。");
+    console.error("inject content.js failed:", error);
+    return false;
   }
 
-  try {
-    const pong = await chrome.tabs.sendMessage(currentTabId, { type: "ping" });
-    if (!pong?.ok) {
-      throw new Error("页面脚本未成功启动");
-    }
-  } catch {
-    throw new Error("扩展脚本没有成功连接到当前页面。请先刷新该网页，再重新打开扩展。")
-  }
+  return await pingContentScript(tabId);
 }
 
-async function sendToContent(message) {
-  await ensureContentScriptReady();
-  return chrome.tabs.sendMessage(currentTabId, message);
+async function getRulesByHost() {
+  const data = await chrome.storage.local.get([STORAGE_KEY]);
+  return data[STORAGE_KEY] || {};
+}
+
+async function saveRulesByHost(rulesByHost) {
+  await chrome.storage.local.set({ [STORAGE_KEY]: rulesByHost });
+}
+
+async function loadSavedRule() {
+  const rulesByHost = await getRulesByHost();
+  currentRule = rulesByHost[currentHost] || null;
+
+  if (keepCountInput) {
+    keepCountInput.value = String(currentRule?.keepCount || 5);
+  }
+  if (autoTrimInput) {
+    autoTrimInput.checked = currentRule?.autoTrim ?? true;
+  }
 }
 
 async function loadPlatformInfo() {
-  if (isRestrictedUrl(currentTabUrl)) {
-    if (els.platformInfo) els.platformInfo.textContent = "请切到聊天网页";
-    return;
-  }
+  if (!currentTab?.id) return;
+
   try {
-    const info = await sendToContent({ type: "getPlatformInfo" });
-    if (els.platformInfo) {
-      const presetText = info?.presetCount ? ` · 已内置 ${info.presetCount} 条预设` : " · 暂无预设";
-      els.platformInfo.textContent = info?.platformLabel ? `当前站点：${info.platformLabel}${presetText}` : "当前站点：通用站点";
+    const ok = await ensureContentScript(currentTab.id);
+    if (!ok) {
+      setStatus("当前页面无法连接扩展脚本", "error");
+      return;
     }
-  } catch {
-    if (els.platformInfo) els.platformInfo.textContent = "当前站点：待识别";
+
+    const resp = await chrome.tabs.sendMessage(currentTab.id, { type: "getPlatformInfo" });
+    if (resp?.ok) {
+      currentPlatform = resp;
+      if (platformInfoEl) {
+        const presetText = resp.presetCount > 0 ? ` · 预设 ${resp.presetCount} 条` : "";
+        platformInfoEl.textContent = `站点：${resp.platformLabel}${presetText}`;
+      }
+    }
+  } catch (error) {
+    console.error(error);
   }
 }
 
-async function loadCurrentRule() {
-  const tab = await getCurrentTab();
-  currentTabId = tab?.id ?? null;
-  currentTabUrl = tab?.url || "";
+function buildRule(baseRule = {}) {
+  const keepCount = Math.max(1, parseInt(keepCountInput?.value || "5", 10));
+  const autoTrim = !!autoTrimInput?.checked;
 
-  if (!currentTabUrl || isRestrictedUrl(currentTabUrl)) {
-    currentHost = "";
-    els.siteInfo.textContent = currentTabUrl || "当前标签页";
-    currentRule = { ...DEFAULT_RULE };
-    els.keepCount.value = String(currentRule.keepCount || 5);
-    if (els.autoTrim) els.autoTrim.checked = currentRule.autoTrim !== false;
-    syncCountBadge();
-    updateDetectedInfo(null);
-    setStatus("请切到具体的大模型对话网页后再使用。", true);
-    return;
-  }
-
-  const url = new URL(currentTabUrl);
-  currentHost = url.host;
-  els.siteInfo.textContent = `${url.host}${url.pathname.length > 1 ? ` · ${url.pathname}` : ""}`;
-
-  const data = await getStorage(["rulesByHost"]);
-  const rulesByHost = data.rulesByHost || {};
-  currentRule = normalizeRule(rulesByHost[currentHost] || DEFAULT_RULE, { fromUI: false });
-  els.keepCount.value = String(currentRule.keepCount || 5);
-  if (els.autoTrim) els.autoTrim.checked = currentRule.autoTrim !== false;
-  syncCountBadge();
-  updateDetectedInfo(currentRule);
+  return {
+    ...baseRule,
+    enabled: true,
+    autoTrim,
+    keepCount,
+  };
 }
 
 async function saveRule(rule) {
-  const normalized = normalizeRule(rule);
-  const data = await getStorage(["rulesByHost"]);
-  const rulesByHost = data.rulesByHost || {};
-  rulesByHost[currentHost] = normalized;
-  await setStorage({ rulesByHost });
-  currentRule = normalized;
-  updateDetectedInfo(currentRule);
-  return normalized;
+  const rulesByHost = await getRulesByHost();
+  rulesByHost[currentHost] = rule;
+  await saveRulesByHost(rulesByHost);
+  currentRule = rule;
 }
 
-async function clearCurrentRule() {
-  const data = await getStorage(["rulesByHost"]);
-  const rulesByHost = data.rulesByHost || {};
+async function clearRule() {
+  const rulesByHost = await getRulesByHost();
   delete rulesByHost[currentHost];
-  await setStorage({ rulesByHost });
-  currentRule = normalizeRule({ ...DEFAULT_RULE, keepCount: getKeepCount(), autoTrim: !!els.autoTrim?.checked }, { fromUI: false });
-  updateDetectedInfo(null);
+  await saveRulesByHost(rulesByHost);
+  currentRule = null;
 }
 
-async function detectRule(auto = true) {
-  if (!auto) {
-    throw new Error("不支持的识别方式");
+async function applyRule(rule) {
+  const ok = await ensureContentScript(currentTab.id);
+  if (!ok) {
+    setStatus("页面脚本未成功加载，请刷新网页后重试", "error");
+    return null;
   }
-  const result = await sendToContent({ type: "guessTurnRule" });
-  if (!result?.ok || !result.rule) {
-    throw new Error(result?.error || "自动识别失败");
-  }
-  const nextRule = normalizeRule({ ...currentRule, ...result.rule, detectionMode: "auto" });
-  setStatus(`已识别：${result.preview || "成功"}`);
-  return nextRule;
-}
 
-function listenPickedRule() {
-  chrome.storage.onChanged.addListener(async (changes, areaName) => {
-    if (areaName !== "local") return;
-    const key = `picked:${currentHost}:turn`;
-    const change = changes[key];
-    if (!change?.newValue) return;
-
-    const picked = change.newValue;
-    const nextRule = normalizeRule({
-      ...currentRule,
-      listSelector: picked.listSelector,
-      itemSelector: picked.itemSelector,
-      detectionMode: "manual",
-    });
-    await saveRule(nextRule);
-    const result = await sendToContent({ type: "setRule", rule: nextRule });
-    if (!result?.ok) {
-      setStatus(result?.error || "手动应用失败", true);
-      return;
-    }
-    setStatus(`已按你点选的对话框保存，当前共有 ${result.totalCount} 轮对话。`);
+  return chrome.tabs.sendMessage(currentTab.id, {
+    type: "applyRuleNow",
+    rule,
   });
 }
 
-els.autoDetect.addEventListener("click", async () => {
-  try {
-    const rule = await detectRule(true);
-    const result = await sendToContent({ type: "setRule", rule });
-    if (!result?.ok) {
-      throw new Error(result?.error || "应用失败");
-    }
-    await saveRule(rule);
-    setStatus(`重新识别完成，已按${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}清理 ${result.trimmedCount} 轮旧对话。`);
-  } catch (error) {
-    setStatus(error.message || String(error), true);
+async function guessRule() {
+  const ok = await ensureContentScript(currentTab.id);
+  if (!ok) {
+    setStatus("页面脚本未成功加载，请刷新网页后重试", "error");
+    return null;
   }
+
+  return chrome.tabs.sendMessage(currentTab.id, {
+    type: "guessTurnRule",
+  });
+}
+
+async function handleGuessAndApply() {
+  if (!currentTab?.id) return;
+
+  setStatus("正在识别对话区域…", "info");
+
+  const guessed = await guessRule();
+  if (!guessed?.ok || !guessed.rule) {
+    setStatus(guessed?.error || "自动识别失败，请手动选择对话框", "error");
+    return;
+  }
+
+  const finalRule = buildRule(guessed.rule);
+  const result = await applyRule(finalRule);
+
+  if (!result?.ok) {
+    setStatus(result?.error || "应用规则失败", "error");
+    return;
+  }
+
+  await saveRule(finalRule);
+
+  const trimmed = result.trimmedCount || 0;
+  const total = result.totalCount || 0;
+  const preview = guessed.preview ? ` · ${guessed.preview}` : "";
+
+  setStatus(
+      `规则已保存，已保留最后 ${finalRule.keepCount} 轮，当前共识别 ${total} 轮，清理了 ${trimmed} 轮旧对话${preview}`,
+      "success"
+  );
+}
+
+async function handleApplySavedRule() {
+  if (!currentRule) {
+    await handleGuessAndApply();
+    return;
+  }
+
+  const finalRule = buildRule(currentRule);
+  const result = await applyRule(finalRule);
+
+  if (!result?.ok) {
+    setStatus(result?.error || "应用规则失败", "error");
+    return;
+  }
+
+  await saveRule(finalRule);
+
+  const trimmed = result.trimmedCount || 0;
+  const total = result.totalCount || 0;
+
+  setStatus(
+      `规则已保存，已保留最后 ${finalRule.keepCount} 轮，当前共识别 ${total} 轮，清理了 ${trimmed} 轮旧对话`,
+      "success"
+  );
+}
+
+async function handleStartPicker() {
+  if (!currentTab?.id) return;
+
+  const ok = await ensureContentScript(currentTab.id);
+  if (!ok) {
+    setStatus("页面脚本未成功加载，请刷新网页后重试", "error");
+    return;
+  }
+
+  const resp = await chrome.tabs.sendMessage(currentTab.id, { type: "startPicker" });
+  if (resp?.ok) {
+    setStatus("请回到网页，点击一整条对话框", "info");
+  } else {
+    setStatus(resp?.error || "无法启动手动选择", "error");
+  }
+}
+
+async function init() {
+  currentTab = await getActiveTab();
+
+  if (!currentTab || !isSupportedPage(currentTab.url)) {
+    setStatus("请在一个正常的聊天网页中使用此扩展", "error");
+    if (btnApply) btnApply.disabled = true;
+    if (btnGuess) btnGuess.disabled = true;
+    if (btnPick) btnPick.disabled = true;
+    if (btnClear) btnClear.disabled = true;
+    return;
+  }
+
+  currentHost = getHostFromUrl(currentTab.url);
+
+  await loadSavedRule();
+  await loadPlatformInfo();
+
+  if (currentRule) {
+    setStatus(`已加载当前站点规则，保留最近 ${currentRule.keepCount || 5} 轮`, "info");
+  } else {
+    setStatus("可先自动识别，也可手动选择对话框", "info");
+  }
+}
+
+btnGuess?.addEventListener("click", async () => {
+  await handleGuessAndApply();
 });
 
-els.pickTurn.addEventListener("click", async () => {
-  try {
-    setStatus("请回到网页，点击一整条对话框…");
-    await sendToContent({ type: "startPicker" });
-  } catch (error) {
-    setStatus(error.message || String(error), true);
-  }
+btnApply?.addEventListener("click", async () => {
+  await handleApplySavedRule();
 });
 
-els.trimNow.addEventListener("click", async () => {
-  try {
-    let rule = normalizeRule(currentRule);
-    if (!rule.listSelector || !rule.itemSelector) {
-      rule = await detectRule(true);
-    }
-    const result = await sendToContent({ type: "applyRuleNow", rule });
-    if (!result?.ok) {
-      throw new Error(result?.error || "清理失败");
-    }
-    await saveRule(rule);
-    setStatus(`已按${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}清理 ${result.trimmedCount} 轮旧对话，当前识别到 ${result.totalCount} 轮。`);
-  } catch (error) {
-    setStatus(error.message || String(error), true);
-  }
+btnPick?.addEventListener("click", async () => {
+  await handleStartPicker();
 });
 
-els.saveApply.addEventListener("click", async () => {
-  try {
-    let rule = normalizeRule(currentRule);
-    if (!rule.listSelector || !rule.itemSelector) {
-      rule = await detectRule(true);
+btnClear?.addEventListener("click", async () => {
+  await clearRule();
+
+  const pickedKey = `picked:${currentHost}:turn`;
+  await chrome.storage.local.remove([pickedKey]);
+
+  if (currentTab?.id) {
+    try {
+      await ensureContentScript(currentTab.id);
+      await chrome.tabs.sendMessage(currentTab.id, { type: "clearRule" });
+    } catch (error) {
+      console.error(error);
     }
-    const result = await sendToContent({ type: "setRule", rule });
-    if (!result?.ok) {
-      throw new Error(result?.error || "应用失败");
-    }
-    await saveRule(rule);
-    setStatus(`规则已保存（${rule.platformLabel || "当前站点"}${rule.detectionMode === "preset" ? "预设" : "规则"}），已保留最后 ${rule.keepCount} 轮，当前清理了 ${result.trimmedCount} 轮旧对话。`);
-  } catch (error) {
-    setStatus(error.message || String(error), true);
   }
+
+  currentRule = null;
+  setStatus("当前站点规则已清除", "success");
 });
 
-els.clearRule.addEventListener("click", async () => {
-  try {
-    await clearCurrentRule();
-    await sendToContent({ type: "clearRule" });
-    setStatus("当前站点规则已清除。刷新页面后可恢复原始内容。", false);
-  } catch (error) {
-    setStatus(error.message || String(error), true);
-  }
+keepCountInput?.addEventListener("change", async () => {
+  if (!currentRule) return;
+  currentRule = buildRule(currentRule);
 });
 
-(async function init() {
-  try {
-    await loadCurrentRule();
-    listenPickedRule();
-    els.keepCount.addEventListener("input", syncCountBadge);
-    els.autoTrim?.addEventListener("change", () => { currentRule.autoTrim = !!els.autoTrim.checked; });
-    if (!isRestrictedUrl(currentTabUrl)) {
-      await ensureContentScriptReady().catch(() => {});
-      await loadPlatformInfo();
-      setStatus("准备就绪");
-    }
-  } catch (error) {
-    setStatus(error.message || String(error), true);
-  }
-})();
+autoTrimInput?.addEventListener("change", async () => {
+  if (!currentRule) return;
+  currentRule = buildRule(currentRule);
+});
+
+init().catch((error) => {
+  console.error(error);
+  setStatus("初始化失败", "error");
+});
