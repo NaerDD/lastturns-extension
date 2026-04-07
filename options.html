@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LLM DOM Trimmer - 已保存规则</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>已保存规则</h1>
+      <p class="muted">这里只展示每个站点保留多少轮，以及该站点是自动识别还是手动点选得到的规则。</p>
+
+      <div class="toolbar">
+        <button id="exportBtn">导出规则 JSON</button>
+        <label class="import-label">
+          导入规则 JSON
+          <input id="importFile" type="file" accept="application/json" />
+        </label>
+      </div>
+
+      <div id="list"></div>
+      <p id="status" class="status"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
