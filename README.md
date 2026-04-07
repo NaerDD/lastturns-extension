@@ -2,7 +2,7 @@
 
 Keep only the most recent chat turns on long AI conversation pages, so heavy conversation DOM does not drag the page down.
 
-**Repository:** https://github.com/yourname/lastturns
+**Repository:** https://github.com/NaerDD/lastturns-extension
 
 ## Support the project
 
